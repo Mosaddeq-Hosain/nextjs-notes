@@ -172,6 +172,7 @@ Answer:
 Same file. Same function.
 
 ✅ Code (written INSIDE login handler)
+```
 import { cookies } from "next/headers";
 
 cookies().set("token", token, {
@@ -180,6 +181,7 @@ cookies().set("token", token, {
   sameSite: "lax",
   path: "/",
 });
+```
 
 
 ## Create middleware file
