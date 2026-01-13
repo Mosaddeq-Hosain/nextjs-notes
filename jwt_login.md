@@ -82,7 +82,7 @@ export async function POST(req: Request) {
   }
 
   // ✅ Password correct (JWT comes next)
-  return NextResponse.json({
+  const response = NextResponse.json({
     message: "Login step 1 success",
     user: {
       id: user.id,
@@ -91,6 +91,13 @@ export async function POST(req: Request) {
     },
   });
 }
+
+
+//   Create JWT   and Store  HERE
+
+
+
+
 
 
 ```
@@ -173,14 +180,14 @@ Same file. Same function.
 
 ✅ Code (written INSIDE login handler)
 ```
-import { cookies } from "next/headers";
+ response.cookies.set("token", token,{
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        path: '/',
+    });
 
-cookies().set("token", token, {
-  httpOnly: true,
-  secure: process.env.NODE_ENV === "production",
-  sameSite: "lax",
-  path: "/",
-});
+return response;
 ```
 
 
