@@ -1,251 +1,199 @@
-## JWT LOGIN (WITHOUT NEXTAUTH) — BIG PICTURE FIRST
+## Login Process Flow
 
-### Login Process
-1. User submits email & password
-2. Server checks user exists in DB
-3. Server checks password (bcrypt)
-4. Server creates JWT
-5. JWT stored (cookie or header)
-6. Server verifies JWT on protected pages
+### 1. **Frontend Login Form** (`app/login/page.tsx`)
 
+* User enters email and password
+* On submit, `handleSubmit`:
 
-### STEP 1 — Decide WHERE JWT is stored
+  * Prevents default form submission
+  * Extracts email and password from form data
+  * Sends a POST request to `/api/login` with JSON body
 
-There are two valid choices:
+```ts
+"use client";
 
-#### Option 1️⃣ HttpOnly Cookie (recommended for web apps)
+import { useRouter } from "next/navigation";
 
-Secure
+export default function LoginPage() {
+  const router = useRouter();
 
-Auto-sent by browser
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
 
-Not accessible by JS
+    const formData = new FormData(e.currentTarget);
 
-#### Option 2️⃣ Authorization Header
+    const res = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: formData.get("email"),
+        password: formData.get("password"),
+      }),
+    });
 
-Used for mobile / APIs
+    if (res.ok) {
+      router.push("/dashboard");
+    } else {
+      alert("Invalid email or password");
+    }
+  }
 
-Must manage manually
+  return (
+    <form onSubmit={handleSubmit}>
+      <h1>Login</h1>
 
+      <input name="email" type="email" required />
+      <input name="password" type="password" required />
 
-__HttpOnly Cookie is the professional choice for a web app like HRIS.__
-
-
-## STEP 2 — Create the LOGIN API (NO JWT yet)
-
-Login logic must live in an API route:
-
+      <button type="submit">Login</button>
+    </form>
+  );
+}
 ```
-app/api/login/route.ts
-```
-We only verify email + password.
 
-🧱 Mental Flow
+---
 
-Receive email & password
+### 2. **API Route Handler** (`app/api/login/route.ts`)
 
-Fetch user from DB
+The POST handler processes the login:
 
-Compare password with bcrypt
+#### **Step 1: User lookup**
 
-```
+* Queries the database for a user with the provided email
+* If not found, returns 401 with `"Invalid email or password"`
+
+#### **Step 2: Password verification**
+
+* Uses `bcrypt.compare()` to check the provided password against the stored hash
+* If invalid, returns 401 with `"Invalid email or password"`
+
+#### **Step 3: Token generation**
+
+* Creates a JWT with:
+
+  * `userId`: user's ID
+  * `role`: user's role
+  * Expiration: 1 day
+  * Signed with `JWT_SECRET`
+
+#### **Step 4: Cookie setting**
+
+* Sets an httpOnly cookie named `"token"` containing the JWT
+* Security settings:
+
+  * `httpOnly: true` (not accessible via JavaScript)
+  * `secure: true` in production (HTTPS only)
+  * `sameSite: 'lax'`
+  * `path: '/'` (available site-wide)
+
+#### **Step 5: Response**
+
+* Returns JSON with success message, status 200, and user info (id, email, role)
+
+```ts
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
 
-export async function POST(req: Request) {
-  const { email, password } = await req.json();
+export async function POST(request: Request) {
+  const { email, password } = await request.json();
 
-  // 1️⃣ Find user
   const result = await db.query(
-    "SELECT id, email, password, role FROM users WHERE email = $1",
+    "SELECT * FROM users WHERE email = $1",
     [email]
   );
 
   if (result.rows.length === 0) {
     return NextResponse.json(
-      { error: "Invalid credentials" },
+      { error: "Invalid email or password" },
       { status: 401 }
     );
   }
 
   const user = result.rows[0];
+  const isPasswordValid = await bcrypt.compare(password, user.password);
 
-  // 2️⃣ Verify password
-  const isValid = await bcrypt.compare(password, user.password);
-
-  if (!isValid) {
+  if (!isPasswordValid) {
     return NextResponse.json(
-      { error: "Invalid credentials" },
+      { error: "Invalid email or password" },
       { status: 401 }
     );
   }
 
-  // ✅ Password correct (JWT comes next)
   const response = NextResponse.json({
-    message: "Login step 1 success",
+    message: "Login successful",
+    status: 200,
     user: {
       id: user.id,
       email: user.email,
       role: user.role,
     },
   });
+
+  const token = jwt.sign(
+    { userId: user.id, role: user.role },
+    process.env.JWT_SECRET!,
+    { expiresIn: "1d" }
+  );
+
+  response.cookies.set("token", token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+  });
+
+  return response;
 }
-
-
-//   Create JWT   and Store  HERE
-
-
-
-
-
-
 ```
 
+---
 
-## STEP 4 — Create JWT (Token Generation)
+### 3. **Frontend Response Handling** (`app/login/page.tsx`)
 
-Now we extend the login API.
+* If the response is OK, redirects to `/dashboard`
+* Otherwise, shows an alert: `"Invalid email or password"`
 
-📌 Goal:
+---
 
-After password verification
+### 4. **Route Protection** (`middleware.ts`)
 
-Generate a JWT
+* Intercepts requests to `/` and `/dashboard/*`
+* Checks for the `"token"` cookie
+* If missing, redirects to `/login`
+* If present, allows the request to proceed
 
-JWT contains minimal info
-
-JWT payload should be:
-
-✅ Minimal
-
-✅ Non-sensitive
-
-✅ Useful for authorization
-
-##  STEP 5 — Create JWT in Next.js
-
-### 1️⃣ Install JWT library
-```
-npm install jsonwebtoken
-```
-
-### 2️⃣ Create a strong JWT secret
-❓ Should you write it randomly?
-
-👉 YES — but securely
-
-Use terminal:
-
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-
-
-Example output:
-
-9f3a1c7e4d9a... (long string)
-
-
-Add to .env.local:
-
-JWT_SECRET=your_generated_secret_here
-
-
-⚠️ Never commit this to GitHub.
-
-### 3️⃣ Generate JWT after login
-
-```
-import jwt from "jsonwebtoken";
-
-const token = jwt.sign(
-  {
-    userId: user.id,
-    role: user.role,
-  },
-  process.env.JWT_SECRET!,
-  {
-    expiresIn: "1d",
-  }
-);
-
-```
-## Step 4 — Store JWT (WHERE exactly?)
-❓ Where should this code be written?
-
-Answer:
-👉 Immediately after JWT creation,
-👉 inside the SAME server login handler
-
-Same file. Same function.
-
-✅ Code (written INSIDE login handler)
-```
- response.cookies.set("token", token,{
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        path: '/',
-    });
-
-return response;
-```
-
-
-## Create middleware file
-
-At project root:
-```
-middleware.ts
-```
-
-🔐 middleware.ts (JWT protection)
-```
+```ts
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import jwt from "jsonwebtoken";
 
-export function middleware(req: NextRequest) {
-  const token = req.cookies.get("token")?.value;
+export function middleware(request: NextRequest) {
+  const token = request.cookies.get("token")?.value;
 
-  // Not logged in
   if (!token) {
     return NextResponse.redirect(
-      new URL("/login", req.url)
+      new URL("/login", request.url)
     );
   }
 
-  try {
-    // Verify JWT
-    jwt.verify(token, process.env.JWT_SECRET!);
-    return NextResponse.next();
-  } catch {
-    // Invalid or expired token
-    return NextResponse.redirect(
-      new URL("/login", req.url)
-    );
-  }
+  return NextResponse.next();
 }
-```
 
-🎯 Protect only specific routes
-
-Add matcher (recommended):
-```
 export const config = {
-  matcher: ["/dashboard/:path*"],
+  matcher: ["/", "/dashboard/:path*"],
 };
 ```
-🧠 Mental Flow (Lock this in)
 
-Browser requests /dashboard
+---
 
-Middleware runs first
+## Security Features
 
-Reads JWT from cookie
+* Passwords hashed with bcrypt
+* JWT tokens for stateless authentication
+* HttpOnly cookies to reduce XSS risk
+* Secure cookies in production
+* Generic error messages to avoid user enumeration
 
-Verifies JWT
-
-✅ Allowed → page loads
-❌ Denied → redirect to /login
-
-
+The login flow uses JWT-based authentication with httpOnly cookies for session management.
